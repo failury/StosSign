@@ -233,6 +233,15 @@ public final class Authentication {
         parameters requestParameters: [String: Any],
         anisetteData: AnisetteData
     ) async throws -> [String: Any] {
+        let request = try makeAuthenticationRequest(parameters: requestParameters, anisetteData: anisetteData)
+        let (data, _) = try await AppleAPI.shared.session.data(for: request)
+        return try decodeAuthenticationResponse(data)
+    }
+
+    public static func makeAuthenticationRequest(
+        parameters requestParameters: [String: Any],
+        anisetteData: AnisetteData
+    ) throws -> URLRequest {
         guard let requestURL = URL(string: "https://gsa.apple.com/grandslam/GsService2") else {
             throw AppleAPIError.unknown
         }
@@ -246,7 +255,7 @@ public final class Authentication {
             "Content-Type": "text/x-xml-plist",
             "X-MMe-Client-Info": anisetteData.deviceDescription,
             "Accept": "*/*",
-            "User-Agent": "AuthKit/1 (Macintosh; OS X 26.6) (com.apple.dt.Xcode/26.0)",
+            "User-Agent": anisetteData.userAgent ?? "AuthKit/1 (Macintosh; OS X 26.6) (com.apple.dt.Xcode/26.0)",
             "Connection": "close"
         ]
         
@@ -261,8 +270,10 @@ public final class Authentication {
         request.httpBody = bodyData
         httpHeaders.forEach { request.addValue($0.value, forHTTPHeaderField: $0.key) }
         
-        let (data, _) = try await AppleAPI.shared.session.data(for: request)
-        
+        return request
+    }
+
+    private static func decodeAuthenticationResponse(_ data: Data) throws -> [String: Any] {
         guard let responseDictionary = try PropertyListSerialization.propertyList(
             from: data,
             format: nil
@@ -308,7 +319,7 @@ public final class Authentication {
             "Accept": "application/x-buddyml",
             "Accept-Language": "en-us",
             "Content-Type": "application/x-plist",
-            "User-Agent": "Xcode",
+            "User-Agent": anisetteData.userAgent ?? "Xcode",
             "X-Apple-App-Info": "com.apple.gs.xcode.auth",
             "X-Xcode-Version": "27.0 (27A5218g)",
             "X-Apple-Identity-Token": encodedIdentityToken,

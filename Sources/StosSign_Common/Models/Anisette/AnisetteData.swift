@@ -15,6 +15,8 @@ public class AnisetteData: Codable {
     public let deviceUniqueIdentifier: String
     public let deviceSerialNumber: String
     public let deviceDescription: String
+    /// Optional identity override for GrandSlam and two-factor authentication.
+    public var userAgent: String?
     public let date: Date
     public let locale: Locale
     public let timeZone: TimeZone
@@ -28,7 +30,8 @@ public class AnisetteData: Codable {
          deviceDescription: String,
          date: Date,
          locale: Locale,
-         timeZone: TimeZone) {
+         timeZone: TimeZone,
+         userAgent: String? = nil) {
         self.machineID = machineID
         self.oneTimePassword = oneTimePassword
         self.localUserID = localUserID
@@ -39,10 +42,11 @@ public class AnisetteData: Codable {
         self.date = date
         self.locale = locale
         self.timeZone = timeZone
+        self.userAgent = userAgent
     }
     
     enum CodingKeys: String, CodingKey {
-        case machineID, oneTimePassword, localUserID, routingInfo, deviceUniqueIdentifier, deviceSerialNumber, deviceDescription, date, locale, timeZone
+        case machineID, oneTimePassword, localUserID, routingInfo, deviceUniqueIdentifier, deviceSerialNumber, deviceDescription, date, locale, timeZone, userAgent
     }
 
     
@@ -62,6 +66,7 @@ public class AnisetteData: Codable {
         self.deviceUniqueIdentifier = try container.decode(String.self, forKey: .deviceUniqueIdentifier)
         self.deviceSerialNumber = try container.decode(String.self, forKey: .deviceSerialNumber)
         self.deviceDescription = try container.decode(String.self, forKey: .deviceDescription)
+        self.userAgent = try container.decodeIfPresent(String.self, forKey: .userAgent)
         
 
         let dateString = try container.decode(String.self, forKey: .date)

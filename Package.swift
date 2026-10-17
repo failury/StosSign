@@ -47,6 +47,10 @@ let package = Package(
         .package(url: "https://github.com/krzyzanowskim/CryptoSwift", from: "1.9.0")
     ],
     targets: [
+        .testTarget(
+            name: "AuthenticationHeaderTests",
+            dependencies: ["StosSign_Auth", "StosSign_Common"]
+        ),
         .target(
             name: "StosSign",
             dependencies: [
