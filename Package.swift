@@ -49,7 +49,7 @@ let package = Package(
     targets: [
         .testTarget(
             name: "AuthenticationHeaderTests",
-            dependencies: ["StosSign_Auth", "StosSign_Common"]
+            dependencies: ["StosSign_Auth", "StosSign_API", "StosSign_Common"]
         ),
         .target(
             name: "StosSign",

@@ -269,7 +269,7 @@ public final class AppleAPI: Sendable {
         return appID
     }
     
-    public func updateAppID(_ appID: AppID, capabilities: [String], team: Team, session: AppleAPISession) async throws -> AppID {
+    public func updateAppID(_ appID: AppID, capabilities: [String], team: Team, session: AppleAPISession, networkSession: URLSession? = nil) async throws -> AppID {
         let url = v1URL.appendingPathComponent("bundleIds").appendingPathComponent(appID.identifier)
         
         let capabilitiesPayload: [[String: Any]] = capabilities.map { capabilityId in
@@ -302,11 +302,9 @@ public final class AppleAPI: Sendable {
             ]
         ]
         
-        let response = try await sendEditRequest(requestURL: url, body: payload, session: session, json: true, appendClientId: false)
+        let response = try await sendEditRequest(requestURL: url, body: payload, session: session, json: true, appendClientId: false, networkSession: networkSession)
         
-        print("Server Response: \(response)")
-        
-        guard let _ = response["data"] as? [String: Any] else {
+        guard response["data"] is [String: Any] || response["_capabilityNoContent"] as? Bool == true else {
             if let data = response["error"] as? String {
                 throw AppleAPIError.customError(code: 0, message: data)
             }
@@ -590,7 +588,7 @@ public final class AppleAPI: Sendable {
         return responseDictionary
     }
     
-    public func sendEditRequest(requestURL: URL, body: [String: Any], session: AppleAPISession, json: Bool = false, appendClientId: Bool = true) async throws -> [String : Any] {
+    public func sendEditRequest(requestURL: URL, body: [String: Any], session: AppleAPISession, json: Bool = false, appendClientId: Bool = true, networkSession: URLSession? = nil) async throws -> [String : Any] {
         let bodyData = json ? try JSONSerialization.data(withJSONObject: body) : try PropertyListSerialization.data(fromPropertyList: body, format: .xml, options: 0)
         
         var urlString = requestURL.absoluteString
@@ -608,7 +606,7 @@ public final class AppleAPI: Sendable {
         let httpHeaders: [String: String] = [
             "Content-Type": json ? "application/vnd.api+json" : "text/x-xml-plist",
             "User-Agent": "Xcode",
-            "Accept": json ? "application/json, text/plain, */*" : "text/x-xml-plist",
+            "Accept": json ? "application/vnd.api+json" : "text/x-xml-plist",
             "Accept-Language": "en-us",
             "X-Apple-App-Info": "com.apple.gs.xcode.auth",
             "X-Xcode-Version": "27.0 (27A5218g)",
@@ -630,14 +628,11 @@ public final class AppleAPI: Sendable {
             request.setValue(value, forHTTPHeaderField: key)
         }
         
-        let (data, _) = try await self.session.data(for: request)
+        let (data, response) = try await (networkSession ?? self.session).data(for: request)
         
         if json {
-            guard let responseDictionary = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any] else {
-                throw AppleAPIError.badServerResponse
-            }
-            
-            return responseDictionary
+            guard let httpResponse = response as? HTTPURLResponse else { throw AppleAPIError.badServerResponse }
+            return try Self.decodeCapabilityServiceResponse(data, response: httpResponse)
         } else {
             guard let responseDictionary = try PropertyListSerialization.propertyList(from: data, options: [], format: nil) as? [String: Any] else {
                 throw AppleAPIError.badServerResponse
