@@ -14,8 +14,10 @@ extension AppleAPI {
         appleID unsanitizedAppleID: String,
         password: String,
         anisetteData: AnisetteData,
+        anisetteDataRefreshHandler: (() async throws -> AnisetteData)? = nil,
+        progressHandler: ((String) -> Void)? = nil,
         verificationHandler: ((@escaping (String?) -> Void) async -> Void)? = nil
     ) async throws -> (Account, AppleAPISession) {
-        try await Authentication.authenticate(appleID: unsanitizedAppleID, password: password, anisetteData: anisetteData, verificationHandler: verificationHandler)
+        try await Authentication.authenticate(appleID: unsanitizedAppleID, password: password, anisetteData: anisetteData, anisetteDataRefreshHandler: anisetteDataRefreshHandler, progressHandler: progressHandler, verificationHandler: verificationHandler)
     }
 }

@@ -19,11 +19,38 @@ public final class Authentication {
     public init() { }
     
     public static let dateFormatter = ISO8601DateFormatter()
+
+    enum TwoFactorChallenge: Equatable {
+        case trustedDevice(codeAlreadySent: Bool)
+        case sms
+    }
+
+    // Apple can push a code with hsc=409 while omitting (or emptying) au.
+    // See SideStore/SideSign#5. Do not infer a challenge from -22411 alone.
+    static func twoFactorChallenge(in response: [String: Any]) -> TwoFactorChallenge? {
+        let status = response["Status"] as? [String: Any] ?? [:]
+        let authType = [status["au"] as? String, response["au"] as? String]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first { !$0.isEmpty }
+        switch authType {
+        case "trustedDeviceSecondaryAuth", "trustedDevice":
+            return .trustedDevice(codeAlreadySent: false)
+        case "secondaryAuth", "sms", "voice", "phone":
+            return .sms
+        case nil where (status["hsc"] as? Int) == 409:
+            return .trustedDevice(codeAlreadySent: true)
+        default:
+            return nil
+        }
+    }
     
     public static func authenticate(
         appleID unsanitizedAppleID: String,
         password: String,
         anisetteData: AnisetteData,
+        anisetteDataRefreshHandler: (() async throws -> AnisetteData)? = nil,
+        progressHandler: ((String) -> Void)? = nil,
+        twoFactorAttempt: Int = 0,
         verificationHandler: ((@escaping (String?) -> Void) async -> Void)? = nil
     ) async throws -> (Account, AppleAPISession) {
         let sanitizedAppleID = unsanitizedAppleID.lowercased()
@@ -59,6 +86,7 @@ public final class Authentication {
             "u": sanitizedAppleID
         ]
         
+        progressHandler?("Apple sign-in: starting password handshake")
         let responseDictionary = try await sendAuthenticationRequest(
             parameters: initialParameters,
             anisetteData: anisetteData
@@ -93,6 +121,7 @@ public final class Authentication {
             "u": sanitizedAppleID
         ]
         
+        progressHandler?("Apple sign-in: completing password handshake")
         let verificationResponse = try await sendAuthenticationRequest(
             parameters: verificationParameters,
             anisetteData: anisetteData
@@ -125,29 +154,36 @@ public final class Authentication {
         
         context.dsid = dsid
         
-        let authType = statusDictionary["au"] as? String
-        switch authType {
-        case "trustedDeviceSecondaryAuth":
-            guard let verificationHandler = verificationHandler else {
+        progressHandler?("Apple sign-in: password response hsc=\(statusDictionary["hsc"] as? Int ?? 0)")
+        switch twoFactorChallenge(in: verificationResponse) {
+        case .trustedDevice(let codeAlreadySent)?:
+            guard twoFactorAttempt == 0, let verificationHandler = verificationHandler else {
                 throw AppleAPIError.requiresTwoFactorAuthentication
             }
             
+            progressHandler?(codeAlreadySent ? "Apple already sent a code. Waiting for verification code." : "Requesting trusted-device verification code")
             try await requestTrustedDeviceTwoFactorCode(
                 dsid: dsid,
                 idmsToken: idmsToken,
                 anisetteData: anisetteData,
+                codeAlreadySent: codeAlreadySent,
+                anisetteDataRefreshHandler: anisetteDataRefreshHandler,
                 verificationHandler: verificationHandler
             )
-            
+            progressHandler?("Verification accepted. Signing in again with fresh anisette.")
+            let retryAnisetteData = try await anisetteDataRefreshHandler?() ?? anisetteData
             return try await authenticate(
                 appleID: unsanitizedAppleID,
                 password: password,
-                anisetteData: anisetteData,
+                anisetteData: retryAnisetteData,
+                anisetteDataRefreshHandler: anisetteDataRefreshHandler,
+                progressHandler: progressHandler,
+                twoFactorAttempt: twoFactorAttempt + 1,
                 verificationHandler: verificationHandler
             )
             
-        case "secondaryAuth":
-            guard let verificationHandler = verificationHandler else {
+        case .sms?:
+            guard twoFactorAttempt == 0, let verificationHandler = verificationHandler else {
                 throw AppleAPIError.requiresTwoFactorAuthentication
             }
             
@@ -158,10 +194,14 @@ public final class Authentication {
                 verificationHandler: verificationHandler
             )
             
+            let retryAnisetteData = try await anisetteDataRefreshHandler?() ?? anisetteData
             return try await authenticate(
                 appleID: unsanitizedAppleID,
                 password: password,
-                anisetteData: anisetteData,
+                anisetteData: retryAnisetteData,
+                anisetteDataRefreshHandler: anisetteDataRefreshHandler,
+                progressHandler: progressHandler,
+                twoFactorAttempt: twoFactorAttempt + 1,
                 verificationHandler: verificationHandler
             )
             
@@ -190,17 +230,26 @@ public final class Authentication {
             ]
             
             
+            progressHandler?("Apple sign-in: requesting developer token")
+            let tokenAnisetteData = try await anisetteDataRefreshHandler?() ?? anisetteData
+            var freshTokenParameters = tokenParameters
+            if var freshClientDictionary = tokenParameters["cpd"] as? [String: Any] {
+                freshClientDictionary["X-Apple-I-MD"] = tokenAnisetteData.oneTimePassword
+                freshClientDictionary["X-Apple-I-MD-M"] = tokenAnisetteData.machineID
+                freshClientDictionary["X-Apple-I-Client-Time"] = dateFormatter.string(from: tokenAnisetteData.date)
+                freshTokenParameters["cpd"] = freshClientDictionary
+            }
             let token = try await fetchAuthToken(
                 app: app,
-                parameters: tokenParameters,
+                parameters: freshTokenParameters,
                 context: context,
-                anisetteData: anisetteData
+                anisetteData: tokenAnisetteData
             )
             
             let session = AppleAPISession(
                 dsid: dsid,
                 authToken: token,
-                anisetteData: anisetteData
+                anisetteData: tokenAnisetteData
             )
             
             let account = try await AppleAPI.shared.fetchAccount(session: session)
@@ -384,6 +433,9 @@ public final class Authentication {
         dsid: String,
         idmsToken: String,
         anisetteData: AnisetteData,
+        codeAlreadySent: Bool = false,
+        anisetteDataRefreshHandler: (() async throws -> AnisetteData)? = nil,
+        session: URLSession = AppleAPI.shared.session,
         verificationHandler: @escaping (@escaping (String?) -> Void) async -> Void
     ) async throws {
         let requestURL = URL(string: "https://gsa.apple.com/auth/verify/trusteddevice")!
@@ -396,7 +448,9 @@ public final class Authentication {
             anisetteData: anisetteData
         )
         
-        let (_, _) = try await AppleAPI.shared.session.data(for: request)
+        if !codeAlreadySent {
+            let (_, _) = try await session.data(for: request)
+        }
         
         let verificationCode = try await withCheckedThrowingContinuation { continuation in
             Task {
@@ -410,15 +464,16 @@ public final class Authentication {
             throw AppleAPIError.requiresTwoFactorAuthentication
         }
         
+        let verificationAnisetteData = try await anisetteDataRefreshHandler?() ?? anisetteData
         var verifyRequest = makeTwoFactorCodeRequest(
             url: verifyURL,
             dsid: dsid,
             idmsToken: idmsToken,
-            anisetteData: anisetteData
+            anisetteData: verificationAnisetteData
         )
         verifyRequest.allHTTPHeaderFields?["security-code"] = code
         
-        let (data, _) = try await AppleAPI.shared.session.data(for: verifyRequest)
+        let (data, _) = try await session.data(for: verifyRequest)
         
         guard let responseDictionary = try PropertyListSerialization.propertyList(
             from: data,
